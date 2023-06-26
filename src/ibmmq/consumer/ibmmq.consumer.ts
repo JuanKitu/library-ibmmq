@@ -1,11 +1,19 @@
+import { Logger } from '@nestjs/common';
 import { StringDecoder } from 'string_decoder';
 import * as mq from 'ibmmq';
-import { MQC } from 'ibmmq';
-import { IConsumer } from './consumer.interface';
+import { MQC, MQObject, SubPromise } from 'ibmmq';
+import { IConsumer, IConsumerConnection } from './consumer.interface';
+import * as console from 'console';
 export class IbmmqConsumer implements IConsumer {
   private readonly qMgr;
   private qName;
   private readonly waitInterval;
+  private readonly userId: string;
+  private readonly password: string;
+  private readonly connectionName: string;
+  private readonly channelName: string;
+  private readonly applName: string;
+  private readonly logger: Logger;
   private msgId: string | null = null;
   private connectionHandle: mq.MQQueueManager;
   private queueHandle: mq.MQObject;
@@ -15,18 +23,31 @@ export class IbmmqConsumer implements IConsumer {
   private async delay(delayMs): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  constructor(qManager: string, qName: string, waitInterval: number) {
-    this.qMgr = qManager;
-    this.qName = qName;
-    this.waitInterval = waitInterval;
+  constructor(config: IConsumerConnection) {
+    this.qMgr = config.qManager;
+    this.qName = config.qName;
+    this.waitInterval = config.waitInterval;
+    this.userId = config.userId;
+    this.password = config.password;
+    this.connectionName = config.connectionName;
+    this.channelName = config.channelName;
+    this.applName = config.applName;
+    this.logger = new Logger(config.channelName);
   }
   private async cleanup(hConn: mq.MQQueueManager, hObj: mq.MQObject): Promise<void> {
     try {
       await mq.ClosePromise(hObj, 0);
-      console.log('MQCLOSE successful');
+      this.logger.log(
+        `Successfully closed to queueManager: {${this.qMgr}} | {NodeJS}-{${this.qMgr}}-{${this.qName}}-{Thread-id}`,
+      );
       await mq.DiscPromise(hConn);
-      console.log('MQDISC successful');
+      this.logger.log(
+        `Successfully disconnected to queueManager: {${this.qMgr}} | {NodeJS}-{${this.qMgr}}-{${this.qName}}-{Thread-id}`,
+      );
     } catch (closeErr) {
+      this.logger.error(
+        `Failed to disconnect to queueManager: {${this.qMgr}} - Exception: {1} | {NodeJS}-{${this.qMgr}}-{${this.qName}}-{Thread-id}`,
+      );
       console.log('MQ call failed in ' + closeErr);
     }
   }
@@ -76,7 +97,6 @@ export class IbmmqConsumer implements IConsumer {
       resolve(messages);
     });
   }
-
   async connect(): Promise<void> {
     const myArgs = process.argv.slice(2); // Remove redundant parms
     if (myArgs[0]) {
@@ -86,16 +106,15 @@ export class IbmmqConsumer implements IConsumer {
       this.msgId = myArgs[1];
     }
 
-    console.log('Connecting to queue manager', this.qMgr, 'and opening queue', this.qName);
     const cno = new mq.MQCNO();
     const csp = new mq.MQCSP();
     const cd = new mq.MQCD();
-    csp.UserId = 'admin';
-    csp.Password = 'passw0rd';
+    csp.UserId = this.userId;
+    csp.Password = this.password;
     cno.SecurityParms = csp;
-    cno.ApplName = 'prueba';
-    cd.ConnectionName = 'localhost(1414)';
-    cd.ChannelName = 'DEV.ADMIN.SVRCONN';
+    cno.ApplName = this.applName;
+    cd.ConnectionName = this.connectionName;
+    cd.ChannelName = this.channelName;
     cno.ClientConn = cd;
     cno.Options = MQC.MQCNO_NONE;
     try {
@@ -105,9 +124,13 @@ export class IbmmqConsumer implements IConsumer {
       od.ObjectType = MQC.MQOT_Q;
       const openOptions = MQC.MQOO_INPUT_AS_Q_DEF + MQC.MQOO_FAIL_IF_QUIESCING + MQC.MQOO_OUTPUT;
       this.connectionHandle = conn;
-      console.log('MQCONN to', this.qMgr, 'successful');
+      this.logger.log(
+        `Successfully connected to queueManager: {${this.qMgr}} | {NodeJS}-{${this.qMgr}}-{${this.qName}}-{Thread-id}`,
+      );
       const obj = await mq.OpenPromise(this.connectionHandle, od, openOptions);
-      console.log('MQOPEN of', this.qName, 'successful');
+      this.logger.log(
+        `Successfully opened to queueManager: {${this.qMgr}} | {NodeJS}-{${this.qMgr}}-{${this.qName}}-{Thread-id}`,
+      );
       this.queueHandle = obj;
     } catch (err) {
       this.ok = false;
